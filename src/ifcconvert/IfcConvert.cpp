@@ -118,13 +118,8 @@ void write_log();
 /// @todo make the filters non-global
 IfcGeom::entity_filter entity_filter; // Entity filter is used always by default.
 IfcGeom::layer_filter layer_filter;
-const std::string NAME_ARG = "Name", GUID_ARG = "GlobalId", DESC_ARG = "Description", TAG_ARG = "Tag";
-boost::array<std::string, 4> supported_args = { { NAME_ARG, GUID_ARG, DESC_ARG, TAG_ARG } };
-IfcGeom::string_arg_filter guid_filter(IfcSchema::Type::IfcRoot, 0); // IfcRoot.GlobalId
-// Note: skipping IfcRoot OwnerHistory, argument index 1
-IfcGeom::string_arg_filter name_filter(IfcSchema::Type::IfcRoot, 2); // IfcRoot.Name
-IfcGeom::string_arg_filter desc_filter(IfcSchema::Type::IfcRoot, 3); // IfcRoot.Description
-IfcGeom::string_arg_filter tag_filter(IfcSchema::Type::IfcProxy, 8, IfcSchema::Type::IfcElement, 7); // IfcProxy.Tag & IfcElement.Tag
+typedef std::map<std::string, IfcGeom::string_arg_filter> arg_filter_map_t;
+arg_filter_map_t arg_filters;
 
 struct geom_filter
 {
@@ -227,8 +222,9 @@ int main(int argc, char** argv)
             "to IfcSpace to be included. The entity names are handled case-insensitively.\n"
             "2) 'layers': the entities that are assigned to presentation layers of which names "
             "match the given values should be included.\n"
-            "3) 'arg <ArgumentName>': the following list of values for that specific argument should be included. "
-            "Currently supported arguments are GlobalId, Name, Description, and Tag.\n\n"
+            "3) 'arg [IfcType.]<AttributeName>': the following list of values for that specific attribute should be included. "
+            "If type is omitted, every type is searched for the attribute, e.g. '--include=arg GlobalId 2O2Fr$t4X7Zf8NOew3FKE5' or "
+            "'--include=arg IfcWallStandardCase.ObjectType \"Basic Wall:Party Wall *\"'.\n\n"
             "The values for 'layers' and 'arg' are handled case-sensitively (wildcards supported)."
             "--include and --exclude cannot be placed right before input file argument and "
             "only single of each argument supported for now. See also --exclude.")
@@ -478,10 +474,10 @@ int main(int argc, char** argv)
 
     if (!entity_filter.values.empty()) { entity_filter.update_description(); Logger::Notice(entity_filter.description); }
     if (!layer_filter.values.empty()) { layer_filter.update_description(); Logger::Notice(layer_filter.description); }
-    if (!guid_filter.values.empty()) { guid_filter.update_description(); Logger::Notice(guid_filter.description); }
-    if (!name_filter.values.empty()) { name_filter.update_description(); Logger::Notice(name_filter.description); }
-    if (!desc_filter.values.empty()) { desc_filter.update_description(); Logger::Notice(desc_filter.description); }
-    if (!tag_filter.values.empty()) { tag_filter.update_description(); Logger::Notice(tag_filter.description); }
+    for (arg_filter_map_t::iterator it = arg_filters.begin(); it != arg_filters.end(); ++it) {
+        it->second.update_description();
+        Logger::Notice(it->second.description);
+    }
 
 	SerializerSettings settings;
 	/// @todo Make APPLY_DEFAULT_MATERIALS configurable? Quickly tested setting this to false and using obj exporter caused the program to crash and burn.
@@ -812,9 +808,6 @@ void parse_filter(geom_filter &filter, const std::vector<std::string>& values)
     } else if (type == "arg") {
         filter.type = geom_filter::ENTITY_ARG;
         filter.arg = *(values.begin() + 1);
-        if (std::find(supported_args.begin(), supported_args.end(), filter.arg) == supported_args.end()) {
-            throw po::validation_error(po::validation_error::invalid_option_value);
-        }
     } else {
         throw po::validation_error(po::validation_error::invalid_option_value);
     }
@@ -875,22 +868,19 @@ std::vector<IfcGeom::filter_t> setup_filters(const std::vector<geom_filter>& fil
             layer_filter.traverse = f.traverse;
             layer_filter.populate(f.values);
         } else if (f.type == geom_filter::ENTITY_ARG) {
-            if (f.arg == GUID_ARG) {
-                guid_filter.include = f.include;
-                guid_filter.traverse = f.traverse;
-                guid_filter.populate(f.values);
-            } else if (f.arg == NAME_ARG) {
-                name_filter.include = f.include;
-                name_filter.traverse = f.traverse;
-                name_filter.populate(f.values);
-            } else if (f.arg == DESC_ARG) {
-                desc_filter.include = f.include;
-                desc_filter.traverse = f.traverse;
-                desc_filter.populate(f.values);
-            } else if (f.arg == TAG_ARG) {
-                tag_filter.include = f.include;
-                tag_filter.traverse = f.traverse;
-                tag_filter.populate(f.values);
+            try {
+                IfcGeom::string_arg_filter arg_filter(f.arg);
+                arg_filter.include = f.include;
+                arg_filter.traverse = f.traverse;
+                arg_filter.populate(f.values);
+                std::pair<arg_filter_map_t::iterator, bool> inserted = arg_filters.insert(std::make_pair(f.arg, arg_filter));
+                if (inserted.second) {
+                    // new arg filter entry
+                    filter_funcs.push_back(boost::ref(inserted.first->second));
+                }
+            } catch (const IfcParse::IfcException& e) {
+                std::cerr << "[Error] " << e.what() << std::endl;
+                return std::vector<IfcGeom::filter_t>();
             }
         }
     }
@@ -912,12 +902,12 @@ std::vector<IfcGeom::filter_t> setup_filters(const std::vector<geom_filter>& fil
         }
     }
 
-    if (!layer_filter.values.empty()) { filter_funcs.push_back(boost::ref(layer_filter));  }
-    if (!entity_filter.values.empty()) { filter_funcs.push_back(boost::ref(entity_filter)); }
-    if (!guid_filter.values.empty()) { filter_funcs.push_back(boost::ref(guid_filter)); }
-    if (!name_filter.values.empty()) { filter_funcs.push_back(boost::ref(name_filter)); }
-    if (!desc_filter.values.empty()) { filter_funcs.push_back(boost::ref(desc_filter)); }
-    if (!tag_filter.values.empty()) { filter_funcs.push_back(boost::ref(tag_filter)); }
+    if (!layer_filter.values.empty()) {
+        filter_funcs.push_back(boost::ref(layer_filter));
+    }
+    if (!entity_filter.values.empty()) {
+        filter_funcs.push_back(boost::ref(entity_filter));
+    }
 
     return filter_funcs;
 }

@@ -24,6 +24,11 @@
 #define IFCGEOMFILTER_H
 
 #include "IfcGeom.h"
+#ifdef USE_IFC4
+#include "../ifcparse/Ifc4-latebound.h"
+#else
+#include "../ifcparse/Ifc2x3-latebound.h"
+#endif
 
 #include <boost/function.hpp>
 #include <boost/regex.hpp>
@@ -122,47 +127,46 @@ namespace IfcGeom
     /// @note supports only string arguments for now
     struct string_arg_filter : public wildcard_filter
     {
-        // Using this for now in order to overcome the fact that different classes have the argument at different indices.
-        typedef std::map<IfcSchema::Type::Enum, unsigned short> arg_map_t;
-        arg_map_t args;
+        /// Set to UNDEFINED in order to try matching the arg_name with every type.
+        IfcSchema::Type::Enum type;
+        /// If type != , using index to access the attribute as an optimization.
+        unsigned char arg_index;
+        std::string arg_name;
+        //IfcUtil::ArgumentType arg_type;
 
-        /// @todo Take only attribute name when IfcBaseClass and IfcLateBoundEntity are merged.
-        string_arg_filter(arg_map_t args) : args(args) { assert_arguments(); }
-        string_arg_filter(IfcSchema::Type::Enum type, unsigned short index) { args[type] = index;  assert_arguments(); }
-        string_arg_filter(
-            IfcSchema::Type::Enum type1, unsigned short index1,
-            IfcSchema::Type::Enum type2, unsigned short index2)
+        string_arg_filter() : type(IfcSchema::Type::UNDEFINED) {}
+        /// @note Throws on invalid input
+        string_arg_filter(const std::string& str)
         {
-            args[type1] = index1;
-            args[type2] = index2;
-            assert_arguments();
-        }
-
-        /// @todo this won't be needed when we have the generic argument name access
-        void assert_arguments()
-        {
-#ifndef NDEBUG
-            for (arg_map_t::const_iterator it = args.begin(); it != args.end(); ++it) {
-                IfcEntityInstanceData dummy(it->first);
-                IfcUtil::IfcBaseClass* base = IfcSchema::SchemaEntity(&dummy);
-                assert(it->second < base->getArgumentCount() && "Argument index out of bounds");
-                assert(base->getArgumentType(it->second) == IfcUtil::Argument_STRING && "Argument type not string");
-                delete base;
+            std::vector<std::string> values;
+            boost::split(values, str, boost::is_any_of("."), boost::token_compress_on);
+            if (values.empty() || values.size() > 2 || !boost::all(values[0], boost::is_alpha()) ||
+                (values.size() == 2 && !boost::all(values[1], boost::is_alpha()))) {
+                throw IfcParse::IfcException("string_arg_filter: Invalid input string. 'IfcType.AttributeName' or 'AttributeName' format must be used.");
             }
-#endif
+            /// @todo It is not documented that Type::FromString() wants ALLCAPS.
+            /// Document or this preferably make Type::FromString() case-insensitive?
+            /// Also Type::ToString() outputs UpperCamelCase so the API is incosistent.
+            type = (values.size() == 2 ? IfcSchema::Type::FromString(boost::to_upper_copy(values[0])) : IfcSchema::Type::UNDEFINED);
+            arg_name = (values.size() == 2 ? values[1] : values[0]);
+            if (type != IfcSchema::Type::UNDEFINED) {
+                arg_index = (unsigned char)IfcSchema::Type::GetAttributeIndex(type, arg_name);
+                IfcUtil::ArgumentType arg_type = IfcSchema::Type::GetAttributeType(type, arg_index);
+                if (arg_type != IfcUtil::Argument_STRING) {
+                    throw IfcParse::IfcException("string_arg_filter: Only attributes that are handled as a string (e.g. IfcName and IfcText) supported for now.");
+                }
+            }
         }
 
         std::string value(IfcSchema::IfcProduct* prod) const
         {
-            for (arg_map_t::const_iterator it = args.begin(); it != args.end(); ++it) {
-                if (prod->is(it->first) && it->second < prod->entity->getArgumentCount() &&
-                    prod->getArgumentType(it->second) == IfcUtil::Argument_STRING) {
-                    Argument *arg = prod->entity->getArgument(it->second);
-                    if (!arg->isNull()) {
-                        return *arg;
-                    }
+            try {
+                unsigned int idx = (type != IfcSchema::Type::UNDEFINED ? arg_index : IfcSchema::Type::GetAttributeIndex(prod->type(), arg_name));
+                Argument *arg = prod->entity->getArgument(idx);
+                if (!arg->isNull()) {
+                    return *arg;
                 }
-            }
+            } catch(...) {}
             return "";
         }
 
@@ -177,24 +181,16 @@ namespace IfcGeom
         void update_description()
         {
             std::stringstream ss;
-
             ss << (traverse ? "traverse " : "") << (include ? "include" : "exclude");
             std::vector<std::string> patterns;
             foreach(const boost::regex& r, values) {
                 patterns.push_back("\"" + r.str() + "\"");
             }
-
-            for (arg_map_t::const_iterator it = args.begin(); it != args.end(); ++it) {
-                IfcEntityInstanceData dummy(it->first);
-                IfcUtil::IfcBaseClass* base = IfcSchema::SchemaEntity(&dummy);
-                try {
-                    ss << " " << IfcSchema::Type::ToString(it->first) << "." << base->getArgumentName(it->second);
-                } catch (const std::exception& e) {
-					Logger::Error(e);
-				}
-                delete base;
+            ss << " ";
+            if (type != IfcSchema::Type::UNDEFINED) {
+                ss << IfcSchema::Type::ToString(type) << ".";
             }
-
+            ss << arg_name;
             ss << " values " << boost::algorithm::join(patterns, " ");
             description = ss.str();
         }
