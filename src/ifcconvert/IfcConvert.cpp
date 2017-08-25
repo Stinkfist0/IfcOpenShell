@@ -144,10 +144,13 @@ void parse_filter(geom_filter &, const std::vector<std::string>&);
 std::vector<IfcGeom::filter_t> setup_filters(const std::vector<geom_filter>&, const std::string&);
 
 bool init_input_file(const std::string& filename, IfcParse::IfcFile& ifc_file, bool no_progress, bool mmap);
+unsigned get_console_width();
 
 int main(int argc, char** argv)
 {
-    po::options_description generic_options("Command line options");
+    const unsigned console_width = get_console_width();
+
+    po::options_description generic_options("Command line options", console_width);
 	generic_options.add_options()
 		("help,h", "display usage information")
 		("version", "display version information")
@@ -171,7 +174,7 @@ int main(int argc, char** argv)
     exclusion_traverse_filter exclude_traverse_filter;
     std::string filter_filename;
 
-    po::options_description geom_options("Geometry options");
+    po::options_description geom_options("Geometry options", console_width);
 	geom_options.add_options()
 		("plan",
 			"Specifies whether to include curves in the output result. Typically "
@@ -259,7 +262,7 @@ int main(int argc, char** argv)
 #endif
     short precision;
 
-    po::options_description serializer_options("Serialization options");
+    po::options_description serializer_options("Serialization options", console_width);
     serializer_options.add_options()
 #ifdef HAVE_ICU
         ("unicode", po::value<std::string>(&unicode_mode),
@@ -910,4 +913,28 @@ std::vector<IfcGeom::filter_t> setup_filters(const std::vector<geom_filter>& fil
     }
 
     return filter_funcs;
+}
+
+#if _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#else
+#include <sys/ioctl.h>
+#endif
+
+unsigned get_console_width()
+{
+#ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO csbiInfo;
+    HANDLE hstdout = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (GetConsoleScreenBufferInfo(hstdout, &csbiInfo)) {
+        return csbiInfo.dwSize.X;
+    }
+#else
+    winsize w;
+    if (ioctl(0, TIOCGWINSZ, &w) != -1) {
+        return w.ws_col;
+    }
+#endif
+    return 80;
 }
