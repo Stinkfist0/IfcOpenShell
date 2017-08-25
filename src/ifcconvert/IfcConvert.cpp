@@ -117,6 +117,15 @@ void write_log();
 bool init_input_file(const std::string& filename, IfcParse::IfcFile& ifc_file, bool no_progress, bool mmap);
 unsigned get_console_width();
 
+void abort_serialization_and_exit(GeometrySerializer* serializer, const std::string& output_temp_filename)
+{
+    // Delete serializer before removing output_temp_filename as serializer probably holds the file open currently.
+    delete serializer;
+    std::remove(output_temp_filename.c_str()); /**< @todo Windows Unicode support */
+    write_log();
+    exit(EXIT_FAILURE);
+}
+
 int main(int argc, char** argv)
 {
     const unsigned console_width = get_console_width();
@@ -514,15 +523,11 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-    // NOTE After this point, make sure to delete serializer upon application exit.
-
+    // NOTE After this point, make sure to delete serializer upon application exit, convenience function abort_serialization_and_exit() can be used.
     if (use_element_hierarchy && output_extension != ".dae") {
         std::cerr << "[Error] --use-element-hierarchy can be used only with .dae output.\n";
-		write_log();
-		print_usage();
-        delete serializer;
-        std::remove(output_temp_filename.c_str()); /**< @todo Windows Unicode support */
-		return EXIT_FAILURE;
+        print_usage();
+        abort_serialization_and_exit(serializer, output_temp_filename);
 	}
 
     const bool is_tesselated = serializer->isTesselated(); // isTesselated() doesn't change at run-time
@@ -541,10 +546,7 @@ int main(int argc, char** argv)
 	}
 
 	if (!serializer->ready()) {
-        delete serializer;
-        std::remove(output_temp_filename.c_str()); /**< @todo Windows Unicode support */
-		write_log();
-		return EXIT_FAILURE;
+        abort_serialization_and_exit(serializer, output_temp_filename);
 	}
 
 	time_t start,end;
@@ -559,10 +561,7 @@ int main(int argc, char** argv)
         /// @todo It would be nice to know and print separate error prints for a case where we found no entities
         /// and for a case we found no entities that satisfy our filtering criteria.
         Logger::Error("No geometrical entities found");
-        delete serializer;
-        std::remove(output_temp_filename.c_str()); /**< @todo Windows Unicode support */
-        write_log();
-        return EXIT_FAILURE;
+        abort_serialization_and_exit(serializer, output_temp_filename);
     }
 
     serializer->setFile(context_iterator.getFile());
@@ -582,8 +581,7 @@ int main(int argc, char** argv)
         if (center_model) {
 			if (site_local_placement) {
 				Logger::Error("Cannot use --center-model together with --site-local-placement");
-				delete serializer;
-				return EXIT_FAILURE;
+                abort_serialization_and_exit(serializer, output_temp_filename);
 			}
             gp_XYZ center = (context_iterator.bounds_min() + context_iterator.bounds_max()) * 0.5;
             offset[0] = -center.X();
@@ -592,10 +590,8 @@ int main(int argc, char** argv)
         } else {
             if (sscanf(offset_str.c_str(), "%lf;%lf;%lf", &offset[0], &offset[1], &offset[2]) != 3) {
                 std::cerr << "[Error] Invalid use of --model-offset\n";
-                delete serializer;
-                std::remove(output_temp_filename.c_str()); /**< @todo Windows Unicode support */
                 print_options(serializer_options);
-                return EXIT_FAILURE;
+                abort_serialization_and_exit(serializer, output_temp_filename);
             }
         }
 
